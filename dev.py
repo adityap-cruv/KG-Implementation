@@ -26,7 +26,7 @@ import sys
 from app.graph.builder import build_onboarding_graph, build_update_graph
 from app.state import load_state, storage_description
 
-FOLDER = "genuin"
+FOLDER = "genuin_1"
 
 
 def _print_header(title: str) -> None:
@@ -45,8 +45,8 @@ async def main() -> int:
     print(f"Storage: {storage_description()}")
     if mode == "onboard":
         print(
-            "Steps:  list → identify base files → build base summary → "
-            "read all → summarize each → rank → save\n"
+            "Steps:  list → read all → build base summary (from ALL files) → "
+            "summarize each → rank → save\n"
         )
         graph = build_onboarding_graph()
     else:
@@ -74,10 +74,9 @@ async def main() -> int:
         print(f"  - {f['name']} ({f['size_bytes']} bytes)")
 
     if mode == "onboard":
-        _print_header(f"Base files chosen ({len(base_files)})")
-        for name in base_files:
-            print(f"  * {name}")
-        _print_header("Base brand summary")
+        _print_header(
+            f"Base brand summary (synthesized from all {len(base_files)} files)"
+        )
         print(base_summary)
 
     _print_header(

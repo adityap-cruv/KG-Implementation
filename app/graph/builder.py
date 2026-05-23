@@ -5,7 +5,6 @@ from langgraph.graph import END, START, StateGraph
 from app.graph.nodes import (
     build_base_summary_node,
     detect_new_files_node,
-    identify_base_files_node,
     list_files_node,
     load_state_node,
     rank_files_node,
@@ -18,21 +17,20 @@ from app.schemas import PipelineState
 
 
 def build_onboarding_graph():
-    """First-time pipeline for a brand: build base summary + summarize + rank EVERY file."""
+    """First-time pipeline for a brand: build base summary from ALL files,
+    then summarize + rank every file."""
     g = StateGraph(PipelineState)
     g.add_node("list_files", list_files_node)
-    g.add_node("identify_base_files", identify_base_files_node)
-    g.add_node("build_base_summary", build_base_summary_node)
     g.add_node("read_all_files", read_all_files_for_summarization_node)
+    g.add_node("build_base_summary", build_base_summary_node)
     g.add_node("summarize_each", summarize_each_node)
     g.add_node("rank_files", rank_files_node)
     g.add_node("save_state", save_state_node)
 
     g.add_edge(START, "list_files")
-    g.add_edge("list_files", "identify_base_files")
-    g.add_edge("identify_base_files", "build_base_summary")
-    g.add_edge("build_base_summary", "read_all_files")
-    g.add_edge("read_all_files", "summarize_each")
+    g.add_edge("list_files", "read_all_files")
+    g.add_edge("read_all_files", "build_base_summary")
+    g.add_edge("build_base_summary", "summarize_each")
     g.add_edge("summarize_each", "rank_files")
     g.add_edge("rank_files", "save_state")
     g.add_edge("save_state", END)

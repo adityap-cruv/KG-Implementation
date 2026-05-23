@@ -12,20 +12,18 @@ def _response(text: str):
     return r
 
 
-def _make_llm(json_payloads_by_keyword: dict, sync_text: str, per_file_summaries: dict):
+def _make_llm(ranking_payload: dict, sync_text: str, per_file_summaries: dict):
     """Build an LLM mock that handles all three call patterns:
     - sync .invoke() returning plain text → base-summary path
-    - .bind().invoke() returning JSON → base-file-selection + ranking paths
+    - .bind().invoke() returning JSON → ranking path
     - async .ainvoke() per-file → summarize_each path
     """
     bound = MagicMock()
 
     def bound_invoke(messages):
         sys_text = messages[0].content
-        if "knowledge graph" in sys_text and "ORDERED list" in sys_text:
-            return _response(json.dumps(json_payloads_by_keyword["ranking"]))
-        if "FILENAMES of every file" in sys_text:
-            return _response(json.dumps(json_payloads_by_keyword["base_select"]))
+        if "ORDERED list" in sys_text:
+            return _response(json.dumps(ranking_payload))
         raise AssertionError(f"unexpected bound call. system head: {sys_text[:80]}")
 
     bound.invoke.side_effect = bound_invoke
@@ -47,18 +45,12 @@ def _make_llm(json_payloads_by_keyword: dict, sync_text: str, per_file_summaries
 @pytest.mark.asyncio
 async def test_onboarding_graph_end_to_end(fixture_folder, state_store):
     mock_llm = _make_llm(
-        json_payloads_by_keyword={
-            "base_select": {
-                "selected": ["company.md", "products.md"],
-                "reason": "core brand pages",
-            },
-            "ranking": {
-                "order": [
-                    {"name": "company.md", "reason": "core brand"},
-                    {"name": "products.md", "reason": "product detail"},
-                    {"name": "privacy.md", "reason": "legal last"},
-                ]
-            },
+        ranking_payload={
+            "order": [
+                {"name": "company.md", "reason": "core brand"},
+                {"name": "products.md", "reason": "product detail"},
+                {"name": "privacy.md", "reason": "legal last"},
+            ]
         },
         sync_text="Acme is a rocket company headquartered in Earth.",
         per_file_summaries={
@@ -73,7 +65,8 @@ async def test_onboarding_graph_end_to_end(fixture_folder, state_store):
         state = await graph.ainvoke({"folder": "acme"})
 
     assert state["base_summary"].startswith("Acme is a rocket company")
-    assert state["base_files"] == ["company.md", "products.md"]
+    # All files now contribute to the base summary, not just a picked subset.
+    assert state["base_files"] == ["company.md", "privacy.md", "products.md"]
     assert [r["name"] for r in state["ranked_files"]] == [
         "company.md",
         "products.md",
@@ -111,11 +104,8 @@ async def test_update_graph_processes_only_new_files(fixture_folder):
     (fixture_folder / "newpage.md").write_text("# New\nA newly added page.\n")
 
     mock_llm = _make_llm(
-        json_payloads_by_keyword={
-            "base_select": {"selected": [], "reason": "unused on update"},
-            "ranking": {
-                "order": [{"name": "newpage.md", "reason": "fresh content"}]
-            },
+        ranking_payload={
+            "order": [{"name": "newpage.md", "reason": "fresh content"}]
         },
         sync_text="unused on update",
         per_file_summaries={"newpage.md": "Newpage summary."},
@@ -157,10 +147,7 @@ async def test_update_graph_with_no_new_files_is_a_no_op(fixture_folder):
     )
 
     mock_llm = _make_llm(
-        json_payloads_by_keyword={
-            "base_select": {"selected": [], "reason": ""},
-            "ranking": {"order": []},
-        },
+        ranking_payload={"order": []},
         sync_text="unused",
         per_file_summaries={},
     )

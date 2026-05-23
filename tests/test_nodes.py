@@ -7,7 +7,6 @@ from fastapi import HTTPException
 from app.graph.nodes import (
     build_base_summary_node,
     detect_new_files_node,
-    identify_base_files_node,
     list_files_node,
     rank_files_node,
     read_all_files_for_summarization_node,
@@ -64,63 +63,44 @@ def test_list_files_node_missing_folder(fixture_folder):
     assert excinfo.value.status_code == 404
 
 
-# ---- identify_base_files ---------------------------------------------------
+# ---- build_base_summary ----------------------------------------------------
 
 
-def test_identify_base_files_node_filters_unknown_names():
-    mock_llm = _bound_llm_returning(
-        {
-            "selected": ["company.md", "hallucinated.md"],
-            "reason": "Company page is foundational",
-        }
-    )
+def test_build_base_summary_node_uses_all_files_from_state_contents():
+    mock_llm = _sync_llm_returning("Acme makes rockets and sells the A1.")
     with patch("app.graph.nodes.get_llm", return_value=mock_llm):
-        result = identify_base_files_node(
+        result = build_base_summary_node(
             {
                 "folder": "acme",
                 "all_files": [
                     {"name": "company.md", "size_bytes": 10},
                     {"name": "products.md", "size_bytes": 10},
+                    {"name": "privacy.md", "size_bytes": 10},
                 ],
+                "target_file_contents": {
+                    "company.md": "# Acme Corp\nWe make rockets.",
+                    "products.md": "# Products\nFlagship rocket A1.",
+                    "privacy.md": "# Privacy\nLegal text.",
+                },
             }
         )
-    assert result["base_files"] == ["company.md"]
+    assert result["base_summary"] == "Acme makes rockets and sells the A1."
+    # base_files records that ALL files contributed (in folder order).
+    assert result["base_files"] == ["company.md", "products.md", "privacy.md"]
 
-
-def test_identify_base_files_node_raises_when_empty_after_filter():
-    mock_llm = _bound_llm_returning(
-        {"selected": ["hallucinated.md"], "reason": "x"}
-    )
-    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
-        with pytest.raises(HTTPException) as excinfo:
-            identify_base_files_node(
-                {
-                    "folder": "acme",
-                    "all_files": [{"name": "company.md", "size_bytes": 10}],
-                }
-            )
-    assert excinfo.value.status_code == 422
-
-
-# ---- build_base_summary ----------------------------------------------------
-
-
-def test_build_base_summary_node_reads_base_files_and_invokes_llm(fixture_folder):
-    mock_llm = _sync_llm_returning("Acme makes rockets.")
-    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
-        result = build_base_summary_node(
-            {
-                "folder": "acme",
-                "folder_path": str(fixture_folder),
-                "base_files": ["company.md", "products.md"],
-            }
-        )
-    assert result["base_summary"] == "Acme makes rockets."
-    # Verify base file contents made it into the prompt.
-    sent = mock_llm.invoke.call_args[0][0]
-    user_content = sent[1].content
+    # Every file's content made it into the prompt.
+    user_content = mock_llm.invoke.call_args[0][0][1].content
     assert "Acme Corp" in user_content
     assert "Flagship rocket A1" in user_content
+    assert "Legal text" in user_content
+    # And no per-filename headers leaked into the prompt.
+    assert "## File: company.md" not in user_content
+
+
+def test_build_base_summary_node_raises_when_no_contents():
+    with pytest.raises(HTTPException) as excinfo:
+        build_base_summary_node({"folder": "acme", "all_files": [], "target_file_contents": {}})
+    assert excinfo.value.status_code == 500
 
 
 # ---- read_all_files / read_new_files --------------------------------------

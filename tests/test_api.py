@@ -29,12 +29,6 @@ def _build_mock_llm():
                     }
                 )
             )
-        if "FILENAMES of every file" in sys_text:
-            return _response(
-                json.dumps(
-                    {"selected": ["company.md"], "reason": "foundational"}
-                )
-            )
         raise AssertionError(f"unexpected: {sys_text[:80]}")
 
     bound.invoke.side_effect = bound_invoke
@@ -81,7 +75,8 @@ def test_summarize_onboarding_mode(fixture_folder):
     assert body["folder"] == "acme"
     assert body["mode"] == "onboard"
     assert body["base_summary"].startswith("Acme is a rocket company")
-    assert body["base_files"] == ["company.md"]
+    # Base summary is now built from ALL files (alphabetical = folder order here).
+    assert body["base_files"] == ["company.md", "privacy.md", "products.md"]
     assert [r["name"] for r in body["ranked_files"]] == [
         "company.md",
         "products.md",

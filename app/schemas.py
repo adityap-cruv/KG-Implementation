@@ -20,19 +20,6 @@ class FileInfo(BaseModel):
 # ---- LLM structured-output schemas ----------------------------------------
 
 
-class BaseFileSelection(BaseModel):
-    """The LLM's pick of which files are foundational to the brand."""
-
-    selected: list[str] = Field(
-        default_factory=list,
-        description="Filenames chosen as the basis for the brand summary",
-    )
-    reason: str = Field(
-        default="",
-        description="One-sentence justification for the selection",
-    )
-
-
 class IngestEntry(BaseModel):
     """One slot in the ranking — order in the list is the rank."""
 

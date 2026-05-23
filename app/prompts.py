@@ -1,45 +1,8 @@
 """All LLM prompts in one place — easy to iterate on without touching nodes."""
 
 # ---------------------------------------------------------------------------
-# 1) BASE-FILE SELECTION (onboarding only)
-# Input:  list of filenames
-# Output: JSON with chosen filenames + one-line reason
-# ---------------------------------------------------------------------------
-BASE_FILE_SELECTION_SYSTEM_PROMPT = """\
-You are setting up a brand for knowledge-graph ingestion. You will be given \
-only the FILENAMES of every file in the brand's folder. Your job is to pick \
-the SMALL subset of files that, taken together, would let a reader \
-understand the brand at a high level — what the company does, its core \
-products, its leadership, and its positioning.
-
-Heuristics:
-- Prefer files that look like the homepage, the company/about page, the \
-core product/platform page, and any "about the team" page.
-- Skip narrow group/community pages, legal pages (privacy, terms), and \
-technical artifacts (sitemap, raw XML).
-
-You MUST respond with a single JSON object — no prose, no markdown fences \
-— matching exactly:
-
-{
-  "selected": ["<filename>", "<filename>", ...],
-  "reason": "<one sentence explaining the selection>"
-}
-"""
-
-BASE_FILE_SELECTION_USER_TEMPLATE = """\
-Folder: {folder}
-
-Files in this folder:
-{file_list}
-
-Return the JSON object now. No prose. No markdown. Just the JSON.\
-"""
-
-
-# ---------------------------------------------------------------------------
-# 2) BASE BRAND SUMMARY (onboarding only)
-# Input:  concatenated contents of the chosen base files
+# 1) BASE BRAND SUMMARY (onboarding only)
+# Input:  concatenated contents of EVERY file in the folder
 # Output: ~300-500 word brand summary in prose
 # ---------------------------------------------------------------------------
 BASE_SUMMARY_SYSTEM_PROMPT = """\

@@ -10,8 +10,6 @@ from pydantic import ValidationError
 from app.config import settings
 from app.llm import get_llm
 from app.prompts import (
-    BASE_FILE_SELECTION_SYSTEM_PROMPT,
-    BASE_FILE_SELECTION_USER_TEMPLATE,
     BASE_SUMMARY_SYSTEM_PROMPT,
     BASE_SUMMARY_USER_TEMPLATE,
     FILE_SUMMARY_SYSTEM_PROMPT,
@@ -20,7 +18,7 @@ from app.prompts import (
     RANKING_USER_TEMPLATE,
 )
 from app import state as state_module
-from app.schemas import BaseFileSelection, IngestOrder, PipelineState
+from app.schemas import IngestOrder, PipelineState
 
 _MAX_CONCURRENT_SUMMARIES = 5
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -103,57 +101,23 @@ def load_state_node(state: PipelineState) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def identify_base_files_node(state: PipelineState) -> dict:
-    """LLM picks the foundational files for the brand summary."""
-    file_list = "\n".join(
-        f"- {f['name']} ({f['size_bytes']} bytes)" for f in state["all_files"]
-    )
-    messages = [
-        SystemMessage(content=BASE_FILE_SELECTION_SYSTEM_PROMPT),
-        HumanMessage(
-            content=BASE_FILE_SELECTION_USER_TEMPLATE.format(
-                folder=state["folder"],
-                file_list=file_list,
-            )
-        ),
-    ]
-    llm = get_llm().bind(response_format={"type": "json_object"})
-    response = llm.invoke(messages)
-    raw = response.content if isinstance(response.content, str) else str(response.content)
-    decision = _parse_json_response(raw, BaseFileSelection, "base-file selection")
-
-    known = {f["name"] for f in state["all_files"]}
-    base_files = [name for name in decision.selected if name in known]
-    if not base_files:
-        raise HTTPException(
-            status_code=422,
-            detail="LLM selected no base files for the brand summary",
-        )
-    return {"base_files": base_files}
-
-
 def build_base_summary_node(state: PipelineState) -> dict:
-    """Read base files from disk and synthesize the brand-level summary.
+    """Synthesize the brand-level summary from EVERY file in the folder.
 
+    Reads from `state.target_file_contents` (populated by read_all_files_for_summarization_node).
     Source documents are joined with anonymous dividers (no filenames) so the
     LLM can't structure its output by source — the goal is one unified brand
     narrative, not a stitched-together set of per-file paragraphs.
     """
-    folder_path = Path(state["folder_path"])
-    documents_parts = []
-    errors = list(state.get("errors", []))
-    for name in state["base_files"]:
-        try:
-            content = (folder_path / name).read_text(encoding="utf-8")
-            documents_parts.append(content.strip())
-        except OSError as exc:
-            errors.append(f"Failed to read base file {name}: {exc}")
-    if not documents_parts:
+    contents = state.get("target_file_contents", {})
+    if not contents:
         raise HTTPException(
             status_code=500,
-            detail="Could not read any of the chosen base files from disk",
+            detail="No file contents available to build the base summary",
         )
-    documents = "\n\n---\n\n".join(documents_parts)
+    # Preserve folder order so the model sees foundational pages early in context.
+    ordered_names = [f["name"] for f in state["all_files"] if f["name"] in contents]
+    documents = "\n\n---\n\n".join(contents[name].strip() for name in ordered_names)
 
     messages = [
         SystemMessage(content=BASE_SUMMARY_SYSTEM_PROMPT),
@@ -166,7 +130,11 @@ def build_base_summary_node(state: PipelineState) -> dict:
     ]
     response = get_llm().invoke(messages)
     text = response.content if isinstance(response.content, str) else str(response.content)
-    return {"base_summary": text.strip(), "errors": errors}
+    return {
+        "base_summary": text.strip(),
+        # Record which files contributed to the base summary (= all files at onboarding time).
+        "base_files": ordered_names,
+    }
 
 
 def read_all_files_for_summarization_node(state: PipelineState) -> dict:
