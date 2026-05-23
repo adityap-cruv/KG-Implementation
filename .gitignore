@@ -3,6 +3,4 @@ __pycache__/
 .env
 genuin/
 docs/
-ranked_files.json
-file_scores.json
 summary.json

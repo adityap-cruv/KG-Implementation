@@ -8,9 +8,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
-os.environ.setdefault("LLM_MODEL", "openai/gpt-oss-120b")
-
 
 @pytest.fixture(autouse=True)
 def _env_defaults(monkeypatch):
@@ -25,7 +22,6 @@ def fixture_folder(tmp_path, monkeypatch):
     base = tmp_path
     brand = base / "acme"
     brand.mkdir()
-    (brand / "summary.txt").write_text("# Summary\nAcme Corp makes rockets.\n")
     (brand / "company.md").write_text("# Acme Corp\nWe make rockets.\n")
     (brand / "products.md").write_text("# Products\nFlagship rocket A1.\n")
     (brand / "privacy.md").write_text("# Privacy\nLegal text.\n")
