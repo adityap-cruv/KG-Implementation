@@ -1,48 +1,15 @@
-import json
-import re
+import asyncio
 from pathlib import Path
 
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import ValidationError
 
 from app.config import settings
 from app.llm import get_llm
-from app.prompts import (
-    SELECTION_SYSTEM_PROMPT,
-    SELECTION_USER_TEMPLATE,
-    SUMMARIZATION_SYSTEM_PROMPT,
-    SUMMARIZATION_USER_TEMPLATE,
-)
-from app.schemas import PipelineState, SelectionResult
+from app.prompts import FILE_SUMMARY_SYSTEM_PROMPT, FILE_SUMMARY_USER_TEMPLATE
+from app.schemas import PipelineState
 
-
-_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-
-
-def _parse_selection(raw: str) -> SelectionResult:
-    """Parse the LLM's selection response, tolerating markdown code fences."""
-    text = raw.strip()
-    match = _JSON_BLOCK_RE.search(text)
-    if match:
-        text = match.group(1)
-    elif text.startswith("```"):
-        # fenced block without `json` hint
-        text = text.strip("`").strip()
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"LLM returned non-JSON selection: {exc}; raw head={raw[:200]!r}",
-        ) from exc
-    try:
-        return SelectionResult.model_validate(payload)
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Selection JSON did not match schema: {exc}",
-        ) from exc
+_MAX_CONCURRENT_SUMMARIES = 5
 
 
 def _resolve_folder(folder: str) -> Path:
@@ -78,43 +45,12 @@ def list_files_node(state: PipelineState) -> dict:
     }
 
 
-def select_files_node(state: PipelineState) -> dict:
-    file_list = "\n".join(
-        f"- {f['name']} ({f['size_bytes']} bytes)" for f in state["all_files"]
-    )
-    messages = [
-        SystemMessage(content=SELECTION_SYSTEM_PROMPT),
-        HumanMessage(
-            content=SELECTION_USER_TEMPLATE.format(
-                folder=state["folder"],
-                file_list=file_list,
-            )
-        ),
-    ]
-    # json_mode is more reliable than function_calling for OpenRouter-routed
-    # reasoning models — no tool-call wrapper for the model to navigate.
-    llm = get_llm().bind(response_format={"type": "json_object"})
-    response = llm.invoke(messages)
-    raw = response.content if isinstance(response.content, str) else str(response.content)
-    result = _parse_selection(raw)
-
-    known = {f["name"] for f in state["all_files"]}
-    selected = [s.model_dump() for s in result.selected if s.name in known]
-    skipped = [s.model_dump() for s in result.skipped if s.name in known]
-
-    if not selected:
-        raise HTTPException(
-            status_code=422,
-            detail="LLM selected no files for summarization",
-        )
-    return {"selected_files": selected, "skipped_files": skipped}
-
-
 def read_files_node(state: PipelineState) -> dict:
+    """Read EVERY file in the folder — no selection step anymore."""
     folder_path = Path(state["folder_path"])
     contents: dict[str, str] = {}
     errors: list[str] = list(state.get("errors", []))
-    for entry in state["selected_files"]:
+    for entry in state["all_files"]:
         name = entry["name"]
         path = folder_path / name
         try:
@@ -124,21 +60,58 @@ def read_files_node(state: PipelineState) -> dict:
     return {"file_contents": contents, "errors": errors}
 
 
-def summarize_node(state: PipelineState) -> dict:
-    documents = "\n\n".join(
-        f"## File: {entry['name']}\n\n{state['file_contents'].get(entry['name'], '')}"
-        for entry in state["selected_files"]
-        if entry["name"] in state["file_contents"]
-    )
-    messages = [
-        SystemMessage(content=SUMMARIZATION_SYSTEM_PROMPT),
-        HumanMessage(
-            content=SUMMARIZATION_USER_TEMPLATE.format(
-                folder=state["folder"],
-                documents=documents,
+async def _summarize_one(
+    llm,
+    semaphore: asyncio.Semaphore,
+    name: str,
+    content: str,
+) -> tuple[str, str | None, str | None]:
+    """Summarize one file. Returns (name, summary_or_None, error_or_None)."""
+    async with semaphore:
+        messages = [
+            SystemMessage(content=FILE_SUMMARY_SYSTEM_PROMPT),
+            HumanMessage(
+                content=FILE_SUMMARY_USER_TEMPLATE.format(
+                    filename=name,
+                    content=content,
+                )
+            ),
+        ]
+        try:
+            response = await llm.ainvoke(messages)
+            text = (
+                response.content
+                if isinstance(response.content, str)
+                else str(response.content)
             )
-        ),
+            return name, text.strip(), None
+        except Exception as exc:
+            return name, None, f"summarize {name}: {exc}"
+
+
+async def summarize_each_node(state: PipelineState) -> dict:
+    """One LLM call per file, run in parallel under a concurrency cap."""
+    llm = get_llm()
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SUMMARIES)
+    contents = state["file_contents"]
+    tasks = [
+        _summarize_one(llm, semaphore, name, content)
+        for name, content in contents.items()
     ]
-    response = get_llm().invoke(messages)
-    summary = response.content if isinstance(response.content, str) else str(response.content)
-    return {"summary": summary}
+    results = await asyncio.gather(*tasks)
+
+    summaries: list[dict] = []
+    errors: list[str] = list(state.get("errors", []))
+    # Preserve folder order (the order of all_files), not gather completion order.
+    by_name = {name: (summary, err) for name, summary, err in results}
+    for entry in state["all_files"]:
+        name = entry["name"]
+        if name not in by_name:
+            continue
+        summary, err = by_name[name]
+        if err:
+            errors.append(err)
+        if summary:
+            summaries.append({"name": name, "summary": summary})
+
+    return {"file_summaries": summaries, "errors": errors}

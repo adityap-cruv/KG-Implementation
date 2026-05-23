@@ -17,30 +17,15 @@ class FileInfo(BaseModel):
     size_bytes: int
 
 
-class SelectedFile(BaseModel):
+class FileSummary(BaseModel):
     name: str
-    reason: str
-
-
-class SelectionResult(BaseModel):
-    """Structured-output schema for the file-selection LLM call."""
-
-    selected: list[SelectedFile] = Field(
-        default_factory=list,
-        description="Files chosen as most relevant for a brand summary",
-    )
-    skipped: list[SelectedFile] = Field(
-        default_factory=list,
-        description="Files explicitly excluded with reasoning",
-    )
+    summary: str
 
 
 class SummarizeResponse(BaseModel):
     folder: str
     all_files: list[FileInfo]
-    selected_files: list[SelectedFile]
-    skipped_files: list[SelectedFile]
-    summary: str
+    file_summaries: list[FileSummary]
     errors: list[str]
 
 
@@ -48,8 +33,6 @@ class PipelineState(TypedDict, total=False):
     folder: str
     folder_path: str
     all_files: list[dict]
-    selected_files: list[dict]
-    skipped_files: list[dict]
     file_contents: dict[str, str]
-    summary: str
+    file_summaries: list[dict]
     errors: list[str]

@@ -1,43 +1,44 @@
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.graph.builder import build_graph
 
 
-def test_graph_end_to_end_with_mocked_llm(fixture_folder):
-    selection_payload = {
-        "selected": [
-            {"name": "company.md", "reason": "core brand info"},
-            {"name": "products.md", "reason": "product catalog"},
-        ],
-        "skipped": [{"name": "privacy.md", "reason": "legal boilerplate"}],
-    }
-    selection_response = MagicMock()
-    selection_response.content = json.dumps(selection_payload)
+def _response(text: str):
+    response = MagicMock()
+    response.content = text
+    return response
 
-    summary_resp = MagicMock()
-    summary_resp.content = "Acme builds rockets, including the A1."
 
-    bound = MagicMock()
-    bound.invoke.return_value = selection_response
+@pytest.mark.asyncio
+async def test_graph_end_to_end_with_mocked_llm(fixture_folder):
+    async def fake_ainvoke(messages):
+        user_content = messages[1].content
+        if "company.md" in user_content:
+            return _response("Acme is a rocket company.")
+        if "products.md" in user_content:
+            return _response("Acme sells the A1 rocket.")
+        if "privacy.md" in user_content:
+            return _response("Acme privacy policy summary.")
+        raise AssertionError(f"unexpected file in prompt: {user_content[:80]}")
 
     mock_llm = MagicMock()
-    mock_llm.bind.return_value = bound
-    mock_llm.invoke.return_value = summary_resp
+    mock_llm.ainvoke = AsyncMock(side_effect=fake_ainvoke)
 
     with patch("app.graph.nodes.get_llm", return_value=mock_llm):
         graph = build_graph()
-        state = graph.invoke({"folder": "acme"})
+        state = await graph.ainvoke({"folder": "acme"})
 
     assert [f["name"] for f in state["all_files"]] == [
         "company.md",
         "privacy.md",
         "products.md",
     ]
-    assert [f["name"] for f in state["selected_files"]] == [
+    assert [s["name"] for s in state["file_summaries"]] == [
         "company.md",
+        "privacy.md",
         "products.md",
     ]
-    assert [f["name"] for f in state["skipped_files"]] == ["privacy.md"]
-    assert "rockets" in state["summary"]
+    assert state["file_summaries"][0]["summary"] == "Acme is a rocket company."
     assert state["errors"] == []

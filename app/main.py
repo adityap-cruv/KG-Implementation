@@ -10,8 +10,9 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Brand Summarizer",
-    description="LangGraph pipeline that selects and summarizes brand documents.",
-    version="0.1.0",
+    description="LangGraph pipeline that produces a per-file summary of every "
+    "document in a folder, ready to feed into a knowledge-graph builder.",
+    version="0.2.0",
 )
 
 
@@ -21,10 +22,10 @@ def health() -> dict:
 
 
 @app.post("/summarize", response_model=SummarizeResponse)
-def summarize(request: SummarizeRequest) -> SummarizeResponse:
+async def summarize(request: SummarizeRequest) -> SummarizeResponse:
     graph = get_compiled_graph()
     try:
-        final_state = graph.invoke({"folder": request.folder})
+        final_state = await graph.ainvoke({"folder": request.folder})
     except HTTPException:
         raise
     except Exception as exc:
@@ -34,8 +35,6 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
     return SummarizeResponse(
         folder=request.folder,
         all_files=final_state.get("all_files", []),
-        selected_files=final_state.get("selected_files", []),
-        skipped_files=final_state.get("skipped_files", []),
-        summary=final_state.get("summary", ""),
+        file_summaries=final_state.get("file_summaries", []),
         errors=final_state.get("errors", []),
     )

@@ -1,28 +1,29 @@
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 
-def _build_mock_llm(summary_text: str = "Acme builds rockets."):
-    selection_payload = {
-        "selected": [{"name": "company.md", "reason": "core brand"}],
-        "skipped": [{"name": "privacy.md", "reason": "legal"}],
-    }
-    selection_response = MagicMock()
-    selection_response.content = json.dumps(selection_payload)
+def _response(text: str):
+    response = MagicMock()
+    response.content = text
+    return response
 
-    summary_resp = MagicMock()
-    summary_resp.content = summary_text
 
-    bound = MagicMock()
-    bound.invoke.return_value = selection_response
+def _build_mock_llm():
+    async def fake_ainvoke(messages):
+        user_content = messages[1].content
+        if "company.md" in user_content:
+            return _response("Acme is a rocket company.")
+        if "products.md" in user_content:
+            return _response("Acme sells the A1 rocket.")
+        if "privacy.md" in user_content:
+            return _response("Privacy policy summary.")
+        raise AssertionError("unexpected file in prompt")
 
     mock_llm = MagicMock()
-    mock_llm.bind.return_value = bound
-    mock_llm.invoke.return_value = summary_resp
+    mock_llm.ainvoke = AsyncMock(side_effect=fake_ainvoke)
     return mock_llm
 
 
@@ -46,20 +47,18 @@ def test_summarize_happy_path(fixture_folder):
     body = response.json()
     assert body["folder"] == "acme"
     assert len(body["all_files"]) == 3
-    assert body["selected_files"] == [
-        {"name": "company.md", "reason": "core brand"}
-    ]
-    assert body["skipped_files"] == [
-        {"name": "privacy.md", "reason": "legal"}
-    ]
-    assert "rockets" in body["summary"]
+    assert {s["name"] for s in body["file_summaries"]} == {
+        "company.md",
+        "products.md",
+        "privacy.md",
+    }
     assert body["errors"] == []
 
 
 def test_summarize_invalid_folder_name():
     client = TestClient(app)
     response = client.post("/summarize", json={"folder": "../etc"})
-    assert response.status_code == 422  # pydantic validation
+    assert response.status_code == 422
 
 
 def test_summarize_missing_folder(fixture_folder):

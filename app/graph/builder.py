@@ -5,8 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from app.graph.nodes import (
     list_files_node,
     read_files_node,
-    select_files_node,
-    summarize_node,
+    summarize_each_node,
 )
 from app.schemas import PipelineState
 
@@ -14,15 +13,13 @@ from app.schemas import PipelineState
 def build_graph():
     graph = StateGraph(PipelineState)
     graph.add_node("list_files", list_files_node)
-    graph.add_node("select_files", select_files_node)
     graph.add_node("read_files", read_files_node)
-    graph.add_node("summarize", summarize_node)
+    graph.add_node("summarize_each", summarize_each_node)
 
     graph.add_edge(START, "list_files")
-    graph.add_edge("list_files", "select_files")
-    graph.add_edge("select_files", "read_files")
-    graph.add_edge("read_files", "summarize")
-    graph.add_edge("summarize", END)
+    graph.add_edge("list_files", "read_files")
+    graph.add_edge("read_files", "summarize_each")
+    graph.add_edge("summarize_each", END)
 
     return graph.compile()
 
