@@ -5,15 +5,29 @@ import pytest
 from fastapi import HTTPException
 
 from app.graph.nodes import (
+    build_file_previews_node,
     list_files_node,
+    _parse_file_score,
     read_files_node,
+    read_company_summary_node,
     select_files_node,
+    score_files_node,
     summarize_node,
 )
 
 
 def _selection_llm(payload: dict) -> MagicMock:
     """Build a mock LLM that returns a JSON string from `.bind(...).invoke(...)`."""
+    response = MagicMock()
+    response.content = json.dumps(payload)
+    bound = MagicMock()
+    bound.invoke.return_value = response
+    llm = MagicMock()
+    llm.bind.return_value = bound
+    return llm
+
+
+def _json_mode_llm(payload: dict) -> MagicMock:
     response = MagicMock()
     response.content = json.dumps(payload)
     bound = MagicMock()
@@ -155,6 +169,105 @@ def test_read_files_node_records_missing_file(fixture_folder):
     result = read_files_node(state)
     assert result["file_contents"] == {}
     assert any("ghost.md" in e for e in result["errors"])
+
+
+def test_read_company_summary_node_reads_summary(fixture_folder):
+    result = read_company_summary_node(
+        {
+            "folder_path": str(fixture_folder),
+            "summary_file": "summary.txt",
+        }
+    )
+    assert "Acme Corp makes rockets" in result["company_summary"]
+
+
+def test_read_company_summary_node_reads_summary_json(fixture_folder):
+    summary_json = fixture_folder.parent / "summary.json"
+    summary_json.write_text(
+        json.dumps({"summary": "Acme summary from JSON."}),
+        encoding="utf-8",
+    )
+
+    result = read_company_summary_node(
+        {
+            "folder_path": str(fixture_folder),
+            "summary_file": "summary.json",
+        }
+    )
+    assert result["company_summary"] == "Acme summary from JSON."
+
+
+def test_build_file_previews_node_skips_summary_file(fixture_folder):
+    list_result = list_files_node({"folder": "acme"})
+    result = build_file_previews_node(
+        {
+            **list_result,
+            "summary_file": "summary.txt",
+        }
+    )
+
+    names = [preview["name"] for preview in result["file_previews"]]
+    assert "summary.txt" not in names
+    assert "company.md" in names
+    assert any("Acme Corp" in preview["headings"] for preview in result["file_previews"])
+
+
+def test_score_files_node_scores_each_preview():
+    payload = {
+        "authority_score": 80,
+        "foundational_value": 90,
+        "currentness_score": 70,
+        "entity_relationship_clarity": 85,
+        "content_specificity": 88,
+        "document_structure_quality": 75,
+        "conflict_risk": 5,
+        "duplicate_penalty": 0,
+        "noise_penalty": 3,
+        "ambiguity_penalty": 4,
+        "reason": "Company page defines Acme and its rocket products.",
+    }
+
+    with patch("app.graph.nodes.get_llm", return_value=_json_mode_llm(payload)):
+        result = score_files_node(
+            {
+                "company_summary": "Acme makes rockets.",
+                "file_previews": [
+                    {
+                        "name": "company.md",
+                        "size_bytes": 25,
+                        "headings": ["Acme Corp"],
+                        "preview": "Acme Corp makes rockets.",
+                    }
+                ],
+            }
+        )
+
+    assert result["scored_files"][0]["name"] == "company.md"
+    assert result["scored_files"][0]["foundational_value"] == 90
+    assert "rocket products" in result["scored_files"][0]["reason"]
+
+
+def test_parse_file_score_recovers_malformed_reason_json():
+    raw = """{
+      "authority_score": 92,
+      "foundational_value": 88,
+      "currentness_score": 95,
+      "entity_relationship_clarity": 85,
+      "content_specificity": 90,
+      "document_structure_quality": 88,
+      "conflict_risk": 5,
+      "duplicate_penalty": 0,
+      "noise_penalty": 3,
+      "ambiguity_penalty": 4,
+      "reason": "This "quoted" reason breaks JSON."
+    }"""
+
+    result = _parse_file_score(raw, "company.md", 123)
+
+    assert result.name == "company.md"
+    assert result.authority_score == 92
+    assert result.foundational_value == 88
+    assert result.reason
 
 
 def test_summarize_node_invokes_llm_with_documents():

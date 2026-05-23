@@ -15,4 +15,8 @@ def get_llm() -> ChatOpenAI:
         timeout=settings.LLM_TIMEOUT_SECONDS,
         max_retries=settings.LLM_MAX_RETRIES,
         max_tokens=settings.LLM_MAX_TOKENS,
+        default_headers={
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "KG Implementation",
+        },
     )

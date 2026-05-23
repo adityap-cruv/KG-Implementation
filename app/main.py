@@ -2,8 +2,13 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 
-from app.graph.builder import get_compiled_graph
-from app.schemas import SummarizeRequest, SummarizeResponse
+from app.graph.builder import get_compiled_graph, get_compiled_scoring_graph
+from app.schemas import (
+    ScoreFilesRequest,
+    ScoreFilesResponse,
+    SummarizeRequest,
+    SummarizeResponse,
+)
 
 logger = logging.getLogger("brand_summarizer")
 logging.basicConfig(level=logging.INFO)
@@ -37,5 +42,33 @@ def summarize(request: SummarizeRequest) -> SummarizeResponse:
         selected_files=final_state.get("selected_files", []),
         skipped_files=final_state.get("skipped_files", []),
         summary=final_state.get("summary", ""),
+        errors=final_state.get("errors", []),
+    )
+
+
+@app.post("/score-files", response_model=ScoreFilesResponse)
+def score_files(request: ScoreFilesRequest) -> ScoreFilesResponse:
+    graph = get_compiled_scoring_graph()
+    try:
+        final_state = graph.invoke(
+            {
+                "folder": request.folder,
+                "summary_file": request.summary_file,
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("LLM scoring pipeline failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM scoring pipeline failed: {exc}",
+        ) from exc
+
+    return ScoreFilesResponse(
+        folder=request.folder,
+        summary_file=request.summary_file,
+        all_files=final_state.get("all_files", []),
+        scored_files=final_state.get("scored_files", []),
         errors=final_state.get("errors", []),
     )
