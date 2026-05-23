@@ -2,7 +2,8 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 
-from app.graph.builder import get_compiled_graph
+from app import state as state_module
+from app.graph.builder import get_onboarding_graph, get_update_graph
 from app.schemas import SummarizeRequest, SummarizeResponse
 
 logger = logging.getLogger("brand_summarizer")
@@ -10,9 +11,10 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Brand Summarizer",
-    description="LangGraph pipeline that produces a per-file summary of every "
-    "document in a folder, ready to feed into a knowledge-graph builder.",
-    version="0.2.0",
+    description="Two-mode LangGraph pipeline: onboard a new brand (build base "
+    "summary + summarize + rank every file), or update an existing brand "
+    "(summarize + rank only newly-added files using the saved base summary).",
+    version="0.4.0",
 )
 
 
@@ -23,7 +25,10 @@ def health() -> dict:
 
 @app.post("/summarize", response_model=SummarizeResponse)
 async def summarize(request: SummarizeRequest) -> SummarizeResponse:
-    graph = get_compiled_graph()
+    existing = state_module.load_state(request.folder)
+    mode = "update" if existing is not None else "onboard"
+    graph = get_update_graph() if existing else get_onboarding_graph()
+
     try:
         final_state = await graph.ainvoke({"folder": request.folder})
     except HTTPException:
@@ -34,7 +39,11 @@ async def summarize(request: SummarizeRequest) -> SummarizeResponse:
 
     return SummarizeResponse(
         folder=request.folder,
+        mode=mode,
+        base_summary=final_state.get("base_summary", ""),
+        base_files=final_state.get("base_files", []),
         all_files=final_state.get("all_files", []),
-        file_summaries=final_state.get("file_summaries", []),
+        ranked_files=final_state.get("ranked_files", []),
+        newly_added=final_state.get("new_ranked_files", []),
         errors=final_state.get("errors", []),
     )

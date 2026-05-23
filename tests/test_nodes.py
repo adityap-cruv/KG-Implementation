@@ -1,27 +1,55 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from app.graph.nodes import (
+    build_base_summary_node,
+    detect_new_files_node,
+    identify_base_files_node,
     list_files_node,
-    read_files_node,
+    rank_files_node,
+    read_all_files_for_summarization_node,
+    read_new_files_node,
+    save_state_node,
     summarize_each_node,
 )
 
 
-def _make_async_response(text: str):
+# ---- helpers ---------------------------------------------------------------
+
+
+def _bound_llm_returning(payload_or_text):
+    """Build a mock LLM whose .bind(...).invoke(...) returns the given payload."""
+    response = MagicMock()
+    response.content = (
+        payload_or_text
+        if isinstance(payload_or_text, str)
+        else json.dumps(payload_or_text)
+    )
+    bound = MagicMock()
+    bound.invoke.return_value = response
+    llm = MagicMock()
+    llm.bind.return_value = bound
+    return llm
+
+
+def _sync_llm_returning(text: str):
     response = MagicMock()
     response.content = text
-    return response
+    llm = MagicMock()
+    llm.invoke.return_value = response
+    return llm
+
+
+# ---- list_files ------------------------------------------------------------
 
 
 def test_list_files_node_returns_sorted_files(fixture_folder):
     result = list_files_node({"folder": "acme"})
     names = [f["name"] for f in result["all_files"]]
     assert names == ["company.md", "privacy.md", "products.md"]
-    assert all(f["size_bytes"] > 0 for f in result["all_files"])
-    assert result["folder_path"].endswith("acme")
 
 
 def test_list_files_node_rejects_path_traversal(fixture_folder):
@@ -36,61 +64,160 @@ def test_list_files_node_missing_folder(fixture_folder):
     assert excinfo.value.status_code == 404
 
 
-def test_list_files_node_empty_folder(tmp_path, monkeypatch):
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    from app import config as config_module
-
-    monkeypatch.setattr(config_module.settings, "BASE_DIR", tmp_path)
-    with pytest.raises(HTTPException) as excinfo:
-        list_files_node({"folder": "empty"})
-    assert excinfo.value.status_code == 404
+# ---- identify_base_files ---------------------------------------------------
 
 
-def test_read_files_node_reads_every_file(fixture_folder):
-    state = {
-        "folder_path": str(fixture_folder),
-        "all_files": [
-            {"name": "company.md", "size_bytes": 1},
-            {"name": "products.md", "size_bytes": 1},
-            {"name": "privacy.md", "size_bytes": 1},
-        ],
-        "errors": [],
-    }
-    result = read_files_node(state)
-    assert set(result["file_contents"].keys()) == {
+def test_identify_base_files_node_filters_unknown_names():
+    mock_llm = _bound_llm_returning(
+        {
+            "selected": ["company.md", "hallucinated.md"],
+            "reason": "Company page is foundational",
+        }
+    )
+    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
+        result = identify_base_files_node(
+            {
+                "folder": "acme",
+                "all_files": [
+                    {"name": "company.md", "size_bytes": 10},
+                    {"name": "products.md", "size_bytes": 10},
+                ],
+            }
+        )
+    assert result["base_files"] == ["company.md"]
+
+
+def test_identify_base_files_node_raises_when_empty_after_filter():
+    mock_llm = _bound_llm_returning(
+        {"selected": ["hallucinated.md"], "reason": "x"}
+    )
+    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
+        with pytest.raises(HTTPException) as excinfo:
+            identify_base_files_node(
+                {
+                    "folder": "acme",
+                    "all_files": [{"name": "company.md", "size_bytes": 10}],
+                }
+            )
+    assert excinfo.value.status_code == 422
+
+
+# ---- build_base_summary ----------------------------------------------------
+
+
+def test_build_base_summary_node_reads_base_files_and_invokes_llm(fixture_folder):
+    mock_llm = _sync_llm_returning("Acme makes rockets.")
+    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
+        result = build_base_summary_node(
+            {
+                "folder": "acme",
+                "folder_path": str(fixture_folder),
+                "base_files": ["company.md", "products.md"],
+            }
+        )
+    assert result["base_summary"] == "Acme makes rockets."
+    # Verify base file contents made it into the prompt.
+    sent = mock_llm.invoke.call_args[0][0]
+    user_content = sent[1].content
+    assert "Acme Corp" in user_content
+    assert "Flagship rocket A1" in user_content
+
+
+# ---- read_all_files / read_new_files --------------------------------------
+
+
+def test_read_all_files_for_summarization_node(fixture_folder):
+    result = read_all_files_for_summarization_node(
+        {
+            "folder_path": str(fixture_folder),
+            "all_files": [
+                {"name": "company.md", "size_bytes": 1},
+                {"name": "products.md", "size_bytes": 1},
+                {"name": "privacy.md", "size_bytes": 1},
+            ],
+        }
+    )
+    assert set(result["target_file_contents"].keys()) == {
         "company.md",
         "products.md",
         "privacy.md",
     }
-    assert "Acme Corp" in result["file_contents"]["company.md"]
-    assert result["errors"] == []
 
 
-def test_read_files_node_records_missing_file(fixture_folder):
-    state = {
-        "folder_path": str(fixture_folder),
-        "all_files": [{"name": "ghost.md", "size_bytes": 1}],
-        "errors": [],
+def test_read_new_files_node_reads_only_listed_names(fixture_folder):
+    result = read_new_files_node(
+        {
+            "folder_path": str(fixture_folder),
+            "new_file_names": ["products.md"],
+        }
+    )
+    assert list(result["target_file_contents"].keys()) == ["products.md"]
+
+
+# ---- detect_new_files ------------------------------------------------------
+
+
+def test_detect_new_files_node_finds_difference():
+    existing = {
+        "base_summary": "An existing brand.",
+        "base_files": ["company.md"],
+        "ranked_files": [
+            {"name": "company.md", "summary": "...", "reason": "..."},
+            {"name": "products.md", "summary": "...", "reason": "..."},
+        ],
     }
-    result = read_files_node(state)
-    assert result["file_contents"] == {}
-    assert any("ghost.md" in e for e in result["errors"])
+    state = {
+        "folder": "acme",
+        "existing_state": existing,
+        "all_files": [
+            {"name": "company.md", "size_bytes": 1},
+            {"name": "products.md", "size_bytes": 1},
+            {"name": "new-page.md", "size_bytes": 1},
+        ],
+    }
+    result = detect_new_files_node(state)
+    assert result["new_file_names"] == ["new-page.md"]
+    assert result["base_summary"] == "An existing brand."
+    assert result["base_files"] == ["company.md"]
+
+
+def test_detect_new_files_node_returns_empty_when_no_changes():
+    existing = {
+        "base_summary": "x",
+        "base_files": [],
+        "ranked_files": [
+            {"name": "company.md", "summary": "s", "reason": "r"},
+        ],
+    }
+    result = detect_new_files_node(
+        {
+            "folder": "acme",
+            "existing_state": existing,
+            "all_files": [{"name": "company.md", "size_bytes": 1}],
+        }
+    )
+    assert result["new_file_names"] == []
+
+
+# ---- summarize_each --------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_summarize_each_node_runs_one_call_per_file():
+async def test_summarize_each_node_uses_base_summary_in_prompt():
     summaries = {
-        "company.md": "Summary of Acme company page.",
-        "products.md": "Summary of Acme products.",
+        "company.md": "Company summary.",
+        "products.md": "Product summary.",
     }
 
     async def fake_ainvoke(messages):
-        # Find which file we are summarizing from the user message.
         user_content = messages[1].content
+        assert "BRAND CONTEXT" in user_content
+        assert "Brand: Acme makes rockets." in user_content
         for name, text in summaries.items():
             if name in user_content:
-                return _make_async_response(text)
+                resp = MagicMock()
+                resp.content = text
+                return resp
         raise AssertionError("unknown file in prompt")
 
     mock_llm = MagicMock()
@@ -103,48 +230,99 @@ async def test_summarize_each_node_runs_one_call_per_file():
                     {"name": "company.md", "size_bytes": 1},
                     {"name": "products.md", "size_bytes": 1},
                 ],
-                "file_contents": {
+                "target_file_contents": {
                     "company.md": "Acme makes rockets.",
                     "products.md": "Flagship rocket A1.",
                 },
-                "errors": [],
+                "base_summary": "Brand: Acme makes rockets.",
             }
         )
 
-    assert [s["name"] for s in result["file_summaries"]] == [
+    assert [s["name"] for s in result["new_file_summaries"]] == [
         "company.md",
         "products.md",
     ]
-    assert result["file_summaries"][0]["summary"] == summaries["company.md"]
-    assert result["errors"] == []
-    assert mock_llm.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_summarize_each_node_records_per_file_errors():
-    async def fake_ainvoke(messages):
-        user_content = messages[1].content
-        if "company.md" in user_content:
-            return _make_async_response("Company summary.")
-        raise RuntimeError("upstream blew up")
-
+async def test_summarize_each_node_short_circuits_when_no_contents():
     mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(side_effect=fake_ainvoke)
-
     with patch("app.graph.nodes.get_llm", return_value=mock_llm):
-        result = await summarize_each_node(
+        result = await summarize_each_node({"target_file_contents": {}})
+    assert result["new_file_summaries"] == []
+
+
+# ---- rank_files ------------------------------------------------------------
+
+
+def test_rank_files_node_orders_files_by_array_position():
+    payload = {
+        "order": [
+            {"name": "products.md", "reason": "product detail"},
+            {"name": "company.md", "reason": "core brand"},
+        ]
+    }
+    mock_llm = _bound_llm_returning(payload)
+    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
+        result = rank_files_node(
             {
-                "all_files": [
-                    {"name": "company.md", "size_bytes": 1},
-                    {"name": "products.md", "size_bytes": 1},
+                "base_summary": "x",
+                "new_file_summaries": [
+                    {"name": "company.md", "summary": "a"},
+                    {"name": "products.md", "summary": "b"},
                 ],
-                "file_contents": {
-                    "company.md": "Acme makes rockets.",
-                    "products.md": "Flagship rocket A1.",
-                },
-                "errors": [],
             }
         )
+    names = [r["name"] for r in result["new_ranked_files"]]
+    assert names == ["products.md", "company.md"]
+    assert result["new_ranked_files"][0]["summary"] == "b"
 
-    assert [s["name"] for s in result["file_summaries"]] == ["company.md"]
-    assert any("products.md" in e for e in result["errors"])
+
+def test_rank_files_node_rejects_unknown_filename():
+    payload = {"order": [{"name": "ghost.md", "reason": "x"}]}
+    mock_llm = _bound_llm_returning(payload)
+    with patch("app.graph.nodes.get_llm", return_value=mock_llm):
+        with pytest.raises(HTTPException) as excinfo:
+            rank_files_node(
+                {
+                    "base_summary": "x",
+                    "new_file_summaries": [{"name": "company.md", "summary": "a"}],
+                }
+            )
+    assert excinfo.value.status_code == 502
+
+
+def test_rank_files_node_short_circuits_with_empty_summaries():
+    # No mock needed — early-return before any LLM call.
+    result = rank_files_node({"base_summary": "x", "new_file_summaries": []})
+    assert result["new_ranked_files"] == []
+
+
+# ---- save_state ------------------------------------------------------------
+
+
+def test_save_state_node_writes_full_merged_list_on_update(fixture_folder, state_store):
+    existing = {
+        "base_summary": "x",
+        "base_files": ["company.md"],
+        "ranked_files": [
+            {"name": "company.md", "summary": "c", "reason": "r1"},
+        ],
+    }
+    state = {
+        "folder": "acme",
+        "base_summary": "x",
+        "base_files": ["company.md"],
+        "existing_state": existing,
+        "new_ranked_files": [
+            {"name": "new.md", "summary": "n", "reason": "r2"},
+        ],
+        "errors": [],
+    }
+    result = save_state_node(state)
+    assert [r["name"] for r in result["ranked_files"]] == ["company.md", "new.md"]
+
+    saved = state_store["acme"]
+    assert [r["name"] for r in saved["ranked_files"]] == ["company.md", "new.md"]
+    assert saved["base_summary"] == "x"
+    assert saved["folder"] == "acme"

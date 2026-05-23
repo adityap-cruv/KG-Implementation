@@ -24,13 +24,20 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = Field(default=120)
     LLM_MAX_RETRIES: int = Field(default=1)
     LLM_MAX_TOKENS: int = Field(
-        default=8192,
+        default=16384,
         description=(
             "Upper bound on tokens per LLM response. Set generously because "
-            "reasoning models (gpt-oss-*) burn tokens internally before they "
-            "emit the final answer; too-low budgets cause truncated JSON."
+            "reasoning models (gpt-oss-*) count reasoning tokens against this "
+            "budget. For 20+ files in a single ranking call, 8K is too tight: "
+            "the model can burn 7-8K on internal reasoning, leaving no room "
+            "for the final JSON output."
         ),
     )
+
+    MONGODB_URI: str = Field(..., description="MongoDB connection URI (Atlas SRV or local)")
+    MONGODB_DATABASE: str = Field(default="brand_summarizer")
+    MONGODB_COLLECTION: str = Field(default="brand_states")
+    MONGODB_TIMEOUT_MS: int = Field(default=10_000)
 
 
 settings = Settings()
