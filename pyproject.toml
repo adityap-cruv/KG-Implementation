@@ -12,6 +12,10 @@ dependencies = [
     "pydantic-settings>=2.5.0",
     "python-dotenv>=1.0.0",
     "pymongo[srv]>=4.6.0",
+    "graphiti-core>=0.7.0",
+    "neo4j>=5.20.0",
+    "json-repair>=0.30",
+    "python-frontmatter>=1.0",
 ]
 
 [project.optional-dependencies]

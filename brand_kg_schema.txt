@@ -1,0 +1,203 @@
+==============================================================================
+BRAND KNOWLEDGE GRAPH — INITIAL 2-LAYER SCHEMA
+==============================================================================
+
+ROOT NODE
+---------
+Brand
+
+CHILD NODES (Layer 1) — 7 total
+-------------------------------
+1. Product
+2. People
+3. Business
+4. Engineering
+5. Marketing
+6. Audience
+7. Partnerships
+
+
+==============================================================================
+WHAT EACH NODE ABSORBS (so future ingestion has a clear "home")
+==============================================================================
+
+Brand          name, founding date, mission, vision, tagline, brand values,
+               brand DNA, headquarters
+
+Product        products, services, SKUs, features, pricing, availability,
+               product categories, releases, roadmap items, packaging
+
+People         founders, leadership, employees, advisors, investors-as-people,
+               spokespeople, ambassadors, key hires, board members
+
+               INTERNAL HIERARCHY — People is organized as a top-down ROLE TREE
+               within each affiliation (each company/org gets its own subtree).
+               Every Person carries a `seniority_tier` attribute (one of the
+               9 tier strings below), and a [:REPORTS_TO] edge points from a
+               person UP to a person at a higher tier in the same affiliation.
+
+               TIER ORDER (highest authority first):
+                 1. FOUNDER   — Founder, Co-Founder, Founding Partner
+                 2. C_SUITE   — CEO, CFO, CTO, CMO, COO, CIO, President, Chairman
+                 3. SVP       — SVP, EVP, Executive Vice President
+                 4. VP        — VP, Vice President, Chief of Staff
+                 5. DIRECTOR  — Director, Head of <function>, Group Director
+                 6. MANAGER   — Manager, Senior Manager, Lead, Principal
+                 7. IC        — Engineer, Analyst, Designer, Associate
+                 8. ADVISOR   — Advisor, Board Member, Independent Director
+                 9. OTHER     — does not fit any of the above
+
+               Hierarchical edges:
+                 (Person {tier=N}) -[:REPORTS_TO]-> (Person {tier<N, same affiliation})
+                 (Person)          -[:AT_TIER]->   (RoleTier {tier='C_SUITE'})
+
+               The build_people_hierarchy.py post-ingest job (in
+               graphiti/self-hosted/) populates these edges. Reporting lines
+               only span people in the SAME affiliation; an advisor at
+               Company A does NOT report to a CEO at Company B.
+
+Business       legal entity, ownership, revenue model, financials, funding
+               rounds, operations, office locations, compliance/legal,
+               M&A history, internal business units
+
+Engineering    tech stack, infrastructure, codebases, repos, APIs, services,
+               systems architecture, databases, platforms, tools used, patents,
+               R&D projects, technical roadmap, security posture
+
+Marketing      campaigns, ads, social posts, press releases, blog/content,
+               brand voice, visual identity (logo, colors, typography),
+               channels (website, IG, TikTok, X, YouTube), retail presence,
+               sponsorships, events
+
+Audience       customer segments, personas, demographics, reviews, testimonials,
+               sentiment, competitors, market positioning, industry context,
+               press coverage, mentions
+
+Partnerships   partner organizations (suppliers, distributors, resellers,
+               tech/integration partners, co-brands, sponsors, agencies,
+               affiliate networks), strategic alliances, joint ventures,
+               sponsorship deals, licensing deals, M&A counter-parties,
+               contract terms / partnership dates
+
+
+==============================================================================
+LAYER-1 RELATIONS (Brand -> child)
+==============================================================================
+
+(Brand) -[:OFFERS]->            (Product)
+(Brand) -[:HAS_PERSON]->        (People)
+(Brand) -[:OPERATES_AS]->       (Business)
+(Brand) -[:BUILT_WITH]->        (Engineering)
+(Brand) -[:COMMUNICATES_VIA]->  (Marketing)
+(Brand) -[:SERVES]->            (Audience)
+(Brand) -[:HAS_PARTNERSHIP]->   (Partnerships)
+
+
+==============================================================================
+CROSS-CHILD RELATIONS (Layer-1 <-> Layer-1)
+These are what make the graph multi-hop reasoning friendly.
+Every node still reaches Brand within 2 hops.
+==============================================================================
+
+-- People ↔ others --
+(People)      -[:FOUNDED]->         (Brand)
+(People)      -[:LEADS]->           (Business)
+(People)      -[:CREATED]->         (Product)
+(People)      -[:WORKS_FOR]->       (Business)
+(People)      -[:WORKS_ON]->        (Engineering)
+(People)      -[:ENDORSES]->        (Brand)
+(People)      -[:APPEARS_IN]->      (Marketing)
+(People)      -[:REPORTS_TO]->      (People)         // hierarchy edge, within same affiliation
+(People)      -[:AT_TIER]->         (RoleTier)       // links to one of the 9 seniority tier nodes
+
+-- Engineering ↔ others --
+(Engineering) -[:POWERS]->          (Product)
+(Engineering) -[:INTEGRATES_WITH]-> (Engineering)
+(Engineering) -[:OWNED_BY]->        (Business)
+(Engineering) -[:USES]->            (Product)        // 3rd-party products
+(Engineering) -[:BUILT_BY]->        (People)
+
+-- Marketing ↔ others --
+(Marketing)   -[:PROMOTES]->        (Product)
+(Marketing)   -[:TARGETED_AT]->     (Audience)
+(Marketing)   -[:FEATURES]->        (People)
+(Marketing)   -[:RUN_BY]->          (Business)
+
+-- Product ↔ others --
+(Product)     -[:SOLD_THROUGH]->    (Business)
+(Product)     -[:TARGETED_AT]->     (Audience)
+(Product)     -[:DEPENDS_ON]->      (Engineering)
+(Product)     -[:PROMOTED_BY]->     (Marketing)
+
+-- Audience ↔ others --
+(Audience)    -[:REVIEWS]->         (Product)
+(Audience)    -[:MENTIONS]->        (Brand)
+(Audience)    -[:COMPARED_TO]->     (Brand)         // competitor mentions
+(Audience)    -[:RESPONDS_TO]->     (Marketing)
+
+-- Business ↔ others --
+(Business)    -[:HAS_AGREEMENT_WITH]-> (Partnerships)  // formal contracts
+(Business)    -[:DISTRIBUTES]->     (Product)
+(Business)    -[:EMPLOYS]->         (People)
+(Business)    -[:INVESTS_IN]->      (Engineering)
+
+-- Partnerships ↔ others --
+(Partnerships) -[:SUPPLIES]->        (Product)        // supplier relationship
+(Partnerships) -[:DISTRIBUTES]->     (Product)        // distribution/reseller
+(Partnerships) -[:CO_BRANDS_WITH]->  (Brand)          // co-branded products/campaigns
+(Partnerships) -[:SPONSORS]->        (Marketing)      // sponsorship deals
+(Partnerships) -[:INTEGRATES_WITH]-> (Engineering)    // tech/API partners
+(Partnerships) -[:REPRESENTED_BY]->  (People)         // partner-side liaison
+(Partnerships) -[:OPERATES_IN]->     (Audience)       // partner reaches a segment
+(Partnerships) -[:PARTNERS_WITH]->   (Partnerships)   // partner-of-partner chains
+
+
+==============================================================================
+ASCII VIEW
+==============================================================================
+
+                                  +-------+
+                                  | Brand |
+                                  +---+---+
+                                      |
+   +---------+---------+-------+------+------+--------+----------+-------------+
+   |         |         |              |             |            |             |
+   v         v         v              v             v            v             v
++-------+ +------+ +--------+ +-----------+ +-----------+ +---------+ +--------------+
+|Product| |People| |Business| |Engineering| | Marketing | | Audience| | Partnerships |
++---+---+ +--+---+ +---+----+ +-----+-----+ +-----+-----+ +----+----+ +------+-------+
+    ^        |         |            |             |            |             |
+    |        |         |            |             |            |             |
+    +--------+---------+------------+-------------+------------+-------------+
+              cross-child edges (see "CROSS-CHILD RELATIONS" above)
+
+  Examples of multi-hop paths:
+    Brand -OFFERS-> Product <-PROMOTES- Marketing -TARGETED_AT-> Audience
+    Brand -BUILT_WITH-> Engineering <-WORKS_ON- People -LEADS-> Business
+    Brand -SERVES-> Audience -REVIEWS-> Product -DEPENDS_ON-> Engineering
+    Brand -HAS_PARTNERSHIP-> Partnerships -SUPPLIES-> Product -PROMOTED_BY-> Marketing
+    Brand -HAS_PARTNERSHIP-> Partnerships -INTEGRATES_WITH-> Engineering -POWERS-> Product
+
+
+==============================================================================
+INGESTION HINTS (how new facts attach)
+==============================================================================
+
+When extracting a new fact about a brand, ask: which of the 6 buckets does
+the subject of the fact belong to? Attach it as a child of that node (Layer 2+).
+
+Examples:
+  "Acme launched Widget Pro in March"      -> new Product subnode
+  "Jane Doe is CTO"                        -> new People subnode + WORKS_FOR Business
+  "Series B raised $40M from Sequoia"      -> new Business subnode (funding round)
+  "Backend runs on Postgres + Kafka"       -> new Engineering subnodes
+  "TikTok campaign #AcmeMoment"            -> new Marketing subnode -TARGETED_AT-> Audience
+  "Gen Z users on Reddit say..."           -> new Audience subnode -MENTIONS-> Brand
+  "Acme partners with Stripe for payments" -> new Partnerships subnode
+                                              -INTEGRATES_WITH-> Engineering
+  "Nike x Off-White collaboration"         -> new Partnerships subnode
+                                              -CO_BRANDS_WITH-> Brand
+  "Acme sponsors F1 team Williams"         -> new Partnerships subnode
+                                              -SPONSORS-> Marketing
+
+Every leaf node, however deep, traces back to Brand via these typed edges.
